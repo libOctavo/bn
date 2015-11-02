@@ -23,3 +23,7 @@ There are some options:
 # License
 
 See [LICENSE](LICENSE)
+
+[num-crate]: https://github.com/rust-num/num
+[ramp]: https://github.com/Aatch/ramp
+[gmp]: https://github.com/thestinger/rust-gmp
