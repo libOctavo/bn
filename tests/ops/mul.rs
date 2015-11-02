@@ -1,4 +1,4 @@
-use bn::Int;
+use bn::{self, Int};
 
 #[test]
 fn simple() {
@@ -16,10 +16,17 @@ fn simple1() {
 }
 
 #[test]
-fn overflow() {
+fn limb_overflow() {
     let num: Int = 0xffffffffu32.into();
 
     assert_eq!(num * num, Into::<Int>::into(0xffffffffu64 * 0xffffffffu64));
+}
+
+#[test]
+fn overflow() {
+    let num: Int = Int::from_raw_limbs(&[0xffffffff; bn::LIMBS]);
+
+    num * num;
 }
 
 mod quickcheck {

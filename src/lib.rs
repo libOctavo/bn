@@ -16,7 +16,6 @@ const BASE: u64 = 1 << BITS;
 /// Big number implementation with constant buffer.
 pub struct Int {
     limbs: [u32; LIMBS],
-    len: usize
 }
 
 impl Int {
@@ -27,8 +26,6 @@ impl Int {
 
         unsafe { ptr::copy_nonoverlapping(limbs.as_ptr(), num.limbs.as_mut_ptr(), limbs.len()); }
 
-        num.len = limbs.len();
-
         num
     }
 
@@ -38,7 +35,6 @@ impl Int {
         let mo  = bit % 32;
 
         self.limbs[div] |= 1 << mo;
-        self.len = cmp::max(div, self.len);
     }
 
     pub fn unset_bit(&mut self, bit: usize) {
@@ -46,7 +42,6 @@ impl Int {
         let mo  = bit % 32;
 
         self.limbs[div] &= !(1 << mo);
-        self.len = cmp::max(div, self.len);
     }
 
     pub fn max() -> Self {
@@ -55,7 +50,7 @@ impl Int {
 
     pub fn is_zero(&self) -> bool {
         let mut res = 0;
-        for limb in &self.limbs[..self.len] {
+        for limb in &self.limbs[..] {
             res |= *limb
         }
 
@@ -65,7 +60,7 @@ impl Int {
 
 impl Clone for Int {
     fn clone(&self) -> Self {
-        Int { limbs: self.limbs, len: self.len }
+        Int { limbs: self.limbs, }
     }
 }
 
@@ -73,7 +68,7 @@ impl Copy for Int {}
 
 impl fmt::Debug for Int {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Int ({:?}, len: {})", &self.limbs[..], self.len)
+        write!(f, "Int ({:?})", &self.limbs[..])
     }
 }
 
@@ -81,15 +76,12 @@ impl Default for Int {
     fn default() -> Self {
         Int {
             limbs: [0; MAX_BITS / 32],
-            len: 0
         }
     }
 }
 
 impl cmp::PartialEq for Int {
     fn eq(&self, other: &Self) -> bool {
-        if self.len != other.len { return false; }
-
         let mut val = 0;
         for (a, b) in self.limbs.iter().zip(other.limbs.iter()) {
             val |= a ^ b;
@@ -103,8 +95,6 @@ impl cmp::Eq for Int {}
 
 impl cmp::PartialOrd for Int {
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        if self.len != other.len { return self.len.partial_cmp(&other.len); }
-
         for (a, b) in self.limbs.iter().zip(other.limbs.iter()) {
             if a.partial_cmp(b).unwrap() != cmp::Ordering::Equal {
                 return a.partial_cmp(b);
@@ -151,7 +141,6 @@ impl From<u32> for Int {
         let mut tmp = Int::default();
 
         tmp.limbs[0] = num;
-        if num != 0 { tmp.len = 1 };
 
         tmp
     }
@@ -162,29 +151,38 @@ impl From<u64> for Int {
         let mut tmp: Int = From::from(num as u32);
 
         tmp.limbs[1] = (num >> 32) as u32;
-        if tmp.limbs[1] != 0 {
-            tmp.len = 2;
-        }
 
         tmp
     }
+}
+
+fn add_with_carry(a: u32, b: u32, carry: u32) -> (u32, u32) {
+    let tmp = a as u64 + b as u64 + carry as u64;
+
+    (tmp as u32, (tmp >> BITS) as u32)
+}
+
+fn sub_with_carry(a: u32, b: u32, carry: u32) -> (u32, u32) {
+    let tmp = BASE + a as u64 - b as u64 - carry as u64;
+
+    ((tmp & 0xffffffff) as u32, ((tmp & BASE) >> BITS) as u32 ^ 1)
+}
+
+fn mul_with_carry(a: u32, b: u32, carry: u32) -> (u32, u32) {
+    let tmp = a as u64 * b as u64 + carry as u64;
+
+    (tmp as u32, (tmp >> BITS) as u32)
 }
 
 impl ops::Add for Int {
     type Output = Self;
 
     fn add(mut self, other: Self) -> Self {
-        self.len = cmp::max(self.len, other.len);
-
         let mut carry = 0;
-        for (a, b) in self.limbs[..self.len].iter_mut().zip(&other.limbs[..self.len]) {
-            let tmp = *a as u64 + *b as u64 + carry;
-            carry = tmp >> 32;
-            *a = tmp as u32;
-        }
-        if carry != 0 && self.len < LIMBS {
-            self.limbs[self.len] = carry as u32;
-            self.len += 1;
+        for (a, b) in self.limbs.iter_mut().zip(&other.limbs[..]) {
+            let tmp = add_with_carry(*a, *b, carry);
+            *a = tmp.0 as u32;
+            carry = tmp.1;
         }
 
         self
@@ -195,44 +193,40 @@ impl ops::Sub for Int {
     type Output = Self;
 
     fn sub(mut self, other: Self) -> Self {
-        self.len = cmp::max(self.len, other.len);
-
-        let mut len = 0;
         let mut borrow = 0;
-        for (i, (a, b)) in self.limbs[..self.len].iter_mut().zip(&other.limbs[..self.len]).enumerate() {
-            let diff = BASE + (*a as u64) - (*b as u64) - (borrow as u64);
+        for (i, (a, b)) in self.limbs.iter_mut().zip(&other.limbs[..]).enumerate() {
+            let diff = sub_with_carry(*a, *b, borrow);
 
-            borrow = ((diff & BASE) >> BITS) ^ 1;
-
-            *a = (diff & 0xffffffff) as u32;
-
-            if *a != 0 { len = i + 1; }
+            borrow = diff.1;
+            *a = diff.0;
         }
 
-        self.len = len;
-
         self
+    }
+}
+
+impl<'a> ops::Mul for &'a Int {
+    type Output = Int;
+
+    fn mul(self, other: Self) -> Int {
+        let mut tmp = Int::default();
+
+        for (j, b) in other.limbs[..128].iter().enumerate() {
+            let mut carry = 0;
+            for (i, a) in self.limbs[..128].iter().enumerate() {
+                let t = *a as u64 * *b as u64;
+                let sum = add_with_carry(tmp.limbs[j + i], t as u32, carry);
+                tmp.limbs[j + i] = sum.0;
+                carry = (t >> 32) as u32 + sum.1;
+            }
+        }
+
+        tmp
     }
 }
 
 impl ops::Mul for Int {
     type Output = Self;
 
-    fn mul(mut self, other: Self) -> Self {
-        self.len = cmp::max(self.len, other.len) + 1;
-
-        let mut len = 0;
-        let mut carry = 0;
-        for (i, (a, b)) in self.limbs[..self.len].iter_mut().zip(&other.limbs[..self.len]).enumerate() {
-            let tmp = (*a as u64 * *b as u64) + carry;
-            carry = tmp >> 32;
-            *a = tmp as u32;
-
-            if *a != 0 { len = i + 1 }
-        }
-
-        self.len = len;
-
-        self
-    }
+    fn mul(self, other: Self) -> Self { &self * &other }
 }
