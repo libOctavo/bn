@@ -206,7 +206,7 @@ impl ops::Sub for Int {
 
             *a = (diff & 0xffffffff) as u32;
 
-            if *a != 0 && diff != 0 { len = i + 1; }
+            if *a != 0 { len = i + 1; }
         }
 
         self.len = len;
@@ -219,18 +219,19 @@ impl ops::Mul for Int {
     type Output = Self;
 
     fn mul(mut self, other: Self) -> Self {
-        self.len = cmp::max(self.len, other.len);
+        self.len = cmp::max(self.len, other.len) + 1;
 
+        let mut len = 0;
         let mut carry = 0;
-        for (a, b) in self.limbs[..self.len].iter_mut().zip(&other.limbs[..self.len]) {
+        for (i, (a, b)) in self.limbs[..self.len].iter_mut().zip(&other.limbs[..self.len]).enumerate() {
             let tmp = (*a as u64 * *b as u64) + carry;
             carry = tmp >> 32;
             *a = tmp as u32;
+
+            if *a != 0 { len = i + 1 }
         }
-        if carry != 0 && self.len < LIMBS {
-            self.limbs[self.len] = carry as u32;
-            self.len += 1;
-        }
+
+        self.len = len;
 
         self
     }
